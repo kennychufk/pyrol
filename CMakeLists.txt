@@ -16,4 +16,5 @@ target_link_libraries(pyrol
   PUBLIC
     rl::mdl
     rl::sg
+    rl::plan
 )
