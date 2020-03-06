@@ -1,6 +1,7 @@
 #include <pybind11/chrono.h>
 #include <pybind11/eigen.h>
 #include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 
 #include <rl/mdl/Kinematic.h>
 #include <rl/mdl/Model.h>
@@ -223,11 +224,24 @@ class PyPlanner : public Planner {
   }
 };
 
-class VectorWrapper {
+class PyPrm : public Prm {
  public:
-  VectorWrapper(::rl::math::Vector const& v) : q(v) {}
-  ::rl::math::Vector q;
+  PyPrm() {
+    start = &_start;
+    goal = &_goal;
+  }
+  ::rl::math::Vector _start, _goal;
 };
+
+class PyRrt : public Rrt {
+ public:
+  PyRrt() {
+    start = &_start;
+    goal = &_goal;
+  }
+  ::rl::math::Vector _start, _goal;
+};
+
 }  // namespace plan
 }  // namespace rl
 
@@ -487,16 +501,6 @@ PYBIND11_MODULE(pyrol, m) {
     py::class_<plan::Planner, plan::PyPlanner>(plan, "Planner")
         .def(py::init<>())
         .def_readwrite("duration", &plan::Planner::duration)
-        .def_readonly("start", &plan::Planner::start)
-        .def("setStart",
-             [](plan::Planner& planner, plan::VectorWrapper& wrapped) {
-               planner.start = &wrapped.q;
-             })
-        .def_readonly("goal", &plan::Planner::goal)
-        .def("setGoal",
-             [](plan::Planner& planner, plan::VectorWrapper& wrapped) {
-               planner.goal = &wrapped.q;
-             })
         .def_readwrite("model", &plan::Planner::model)
         .def_readwrite("viewer", &plan::Planner::viewer)
         .def("getName", &plan::Planner::getName)
@@ -505,8 +509,10 @@ PYBIND11_MODULE(pyrol, m) {
         .def("solve", &plan::Planner::solve)
         .def("verify", &plan::Planner::verify);
 
-    py::class_<plan::Rrt, plan::Planner>(plan, "Rrt")
+    py::class_<plan::PyRrt, plan::Planner>(plan, "Rrt")
         .def(py::init<>())
+        .def_readwrite("start", &plan::PyRrt::_start)
+        .def_readwrite("goal", &plan::PyRrt::_goal)
         .def_readwrite("delta", &plan::Rrt::delta)
         .def_readwrite("epsilon", &plan::Rrt::epsilon)
         .def_readwrite("sampler", &plan::Rrt::sampler)
@@ -515,8 +521,10 @@ PYBIND11_MODULE(pyrol, m) {
         .def("getNumVertices", &plan::Rrt::getNumVertices)
         .def("setNearestNeighbors", &plan::Rrt::setNearestNeighbors);
 
-    py::class_<plan::Prm, plan::Planner>(plan, "Prm")
+    py::class_<plan::PyPrm, plan::Planner>(plan, "Prm")
         .def(py::init<>())
+        .def_readwrite("start", &plan::PyPrm::_start)
+        .def_readwrite("goal", &plan::PyPrm::_goal)
         .def_readwrite("astar", &plan::Prm::astar)
         .def_readwrite("degree", &plan::Prm::degree)
         .def_readwrite("k", &plan::Prm::k)
@@ -528,8 +536,5 @@ PYBIND11_MODULE(pyrol, m) {
         .def("getNumEdges", &plan::Prm::getNumEdges)
         .def("getNumVertices", &plan::Prm::getNumVertices)
         .def("setNearestNeighbors", &plan::Prm::setNearestNeighbors);
-
-    py::class_<plan::VectorWrapper>(plan, "VectorWrapper")
-        .def(py::init<const math::Vector&>());
   }
 }
