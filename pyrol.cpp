@@ -1,11 +1,22 @@
 #include <pybind11/chrono.h>
 #include <pybind11/eigen.h>
+#include <pybind11/operators.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <rl/mdl/InverseKinematics.h>
+#include <rl/mdl/JacobianInverseKinematics.h>
 #include <rl/mdl/Kinematic.h>
 #include <rl/mdl/Model.h>
+#include <rl/mdl/NloptInverseKinematics.h>
 #include <rl/mdl/XmlFactory.h>
+
+#include <rl/mdl/Body.h>
+#include <rl/mdl/Compound.h>
+#include <rl/mdl/Frame.h>
+#include <rl/mdl/Joint.h>
+#include <rl/mdl/Transform.h>
+#include <rl/mdl/World.h>
 
 #include <rl/plan/GnatNearestNeighbors.h>
 #include <rl/plan/KdtreeBoundingBoxNearestNeighbors.h>
@@ -37,9 +48,27 @@
 #include <rl/sg/bullet/Model.h>
 #include <rl/sg/bullet/Scene.h>
 #include <rl/sg/bullet/Shape.h>
+
+#include <sstream>
 #include <utility>
 
 namespace rl {
+namespace mdl {
+class PyInverseKinematics : public InverseKinematics {
+ public:
+  using InverseKinematics::InverseKinematics;
+  virtual bool solve() {
+    PYBIND11_OVERLOAD_PURE(bool, InverseKinematics, solve);
+  }
+};
+class PyIterativeInverseKinematics : public IterativeInverseKinematics {
+ public:
+  using IterativeInverseKinematics::IterativeInverseKinematics;
+  virtual bool solve() {
+    PYBIND11_OVERLOAD_PURE(bool, IterativeInverseKinematics, solve);
+  }
+};
+}  // namespace mdl
 namespace sg {
 class PyShape : public Shape {
  public:
@@ -256,8 +285,47 @@ PYBIND11_MODULE(pyrol, m) {
   {
     py::module math = m.def_submodule(
         "math", "General mathematical data structures and algorithms");
+
+    py::class_<math::AngleAxis>(math, "AngleAxis")
+        .def(py::init<>())
+        .def(py::init<const math::Real&, const math::Vector3&>())
+        .def(py::init<const math::Quaternion&>())
+        .def(py::init<const math::Matrix33>())
+        .def(py::self * py::self)
+        .def(py::self * math::Quaternion());
+
+    py::class_<math::Quaternion>(math, "Quaternion")
+        .def(py::init<>())
+        .def(py::init<const math::Real&, const math::Real&, const math::Real&,
+                      const math::Real&>())
+        .def(py::init<const math::Real*>())
+        .def(py::init<const math::AngleAxis&>())
+        .def(py::init<const math::Matrix33&>())
+        .def(py::init<const math::Vector4&>())
+        .def_static("fromEulerAngles",
+                    [](const math::Vector3& euler_angles) {
+                      return math::Quaternion(
+                          Eigen::AngleAxisd(euler_angles[2],
+                                            rl::math::Vector3::UnitZ()) *
+                          Eigen::AngleAxisd(euler_angles[1],
+                                            rl::math::Vector3::UnitY()) *
+                          Eigen::AngleAxisd(euler_angles[0],
+                                            rl::math::Vector3::UnitX()));
+                    })
+        .def(py::self * py::self)
+        .def(py::self * math::AngleAxis())
+        .def("__repr__", [](const math::Quaternion& quat) {
+          std::stringstream repr_stream;
+          repr_stream << "( "
+                      << quat.vec().format(
+                             Eigen::IOFormat(5, 0, " ", " ", "", "", "[", "]"))
+                      << " " << quat.w() << " )";
+          return repr_stream.str();
+        });
+
     py::class_<math::Transform>(math, "Transform")
         .def(py::init<>())
+        .def_static("Identity", &math::Transform::Identity)
         .def("translation",
              [](math::Transform const& transform) {
                return math::Vector3(transform.translation());
@@ -271,10 +339,20 @@ PYBIND11_MODULE(pyrol, m) {
                return math::Vector3(
                    transform.rotation().eulerAngles(2, 1, 0).reverse());
              })
-        .def("quaternion", [](math::Transform const& transform) {
-          math::Quaternion quat(transform.rotation());
-          return math::Vector4(quat.x(), quat.y(), quat.z(), quat.w());
-        });
+        .def("quaternion",
+             [](math::Transform const& transform) {
+               math::Quaternion quat(transform.rotation());
+               return math::Vector4(quat.x(), quat.y(), quat.z(), quat.w());
+             })
+        .def("rotate",
+             [](math::Transform& transform, const math::Quaternion& quat) {
+               return transform.rotate(quat);
+             })
+        .def("setIdentity", &math::Transform::setIdentity)
+        .def("translate",
+             [](math::Transform& transform, const math::Vector3& v) {
+               return transform.translate(v);
+             });
   }
   {
     py::module mdl = m.def_submodule(
@@ -288,14 +366,220 @@ PYBIND11_MODULE(pyrol, m) {
     py::class_<mdl::Model>(mdl, "Model")
         .def(py::init<>())
         .def_property("name", &mdl::Model::getName, &mdl::Model::setName)
-        .def("setPosition", &mdl::Model::setPosition)
+        .def_property_readonly("bodies", &mdl::Model::getBodies)
+        .def_property_readonly("frames", &mdl::Model::getFrames)
+        .def_property("gammaPosition", &mdl::Model::getGammaPosition,
+                      &mdl::Model::setGammaPosition)
+        .def_property("gammaVelocity", &mdl::Model::getGammaVelocity,
+                      &mdl::Model::setGammaVelocity)
+        .def_property("home", &mdl::Model::getHomePosition,
+                      &mdl::Model::setHomePosition)
+        .def_property_readonly("invGammaPosition",
+                               &mdl::Model::getGammaPositionInverse)
+        .def_property_readonly("invGammaVelocity",
+                               &mdl::Model::getGammaVelocityInverse)
+        .def_property_readonly("joints", &mdl::Model::getJoints)
+        .def_property("manufacturer", &mdl::Model::getManufacturer,
+                      &mdl::Model::setManufacturer)
+        .def_property_readonly("transforms", &mdl::Model::getTransforms)
+        .def("add", py::overload_cast<mdl::Compound*, const mdl::Frame*,
+                                      const mdl::Frame*>(&mdl::Model::add))
+        .def("add", py::overload_cast<mdl::Frame*>(&mdl::Model::add))
+        .def("add", py::overload_cast<mdl::Transform*, const mdl::Frame*,
+                                      const mdl::Frame*>(&mdl::Model::add))
         .def("areColliding", &mdl::Model::areColliding)
+        .def("generatePositionGaussian",
+             py::overload_cast<const ::rl::math::Vector&,
+                               const ::rl::math::Vector&>(
+                 &mdl::Model::generatePositionGaussian))
+        .def("generatePositionGaussian",
+             py::overload_cast<const ::rl::math::Vector&,
+                               const ::rl::math::Vector&,
+                               const ::rl::math::Vector&>(
+                 &mdl::Model::generatePositionGaussian, py::const_))
+        .def("generatePositionUniform",
+             py::overload_cast<>(&mdl::Model::generatePositionUniform))
+        .def("generatePositionUniform",
+             py::overload_cast<const ::rl::math::Vector&>(
+                 &mdl::Model::generatePositionUniform, py::const_))
+        .def("generatePositionUniform",
+             py::overload_cast<const ::rl::math::Vector&,
+                               const ::rl::math::Vector&>(
+                 &mdl::Model::generatePositionUniform))
+        .def("generatePositionUniform",
+             py::overload_cast<const ::rl::math::Vector&,
+                               const ::rl::math::Vector&,
+                               const ::rl::math::Vector&>(
+                 &mdl::Model::generatePositionUniform, py::const_))
+        .def("getAcceleration", &mdl::Model::getAcceleration)
+        .def("getAccelerationUnits", &mdl::Model::getAccelerationUnits)
+        .def("getBodies", &mdl::Model::getBodies)
+        .def("getBody", &mdl::Model::getBody)
+        .def("getBodyFrame", &mdl::Model::getBodyFrame)
+        .def("getDof", &mdl::Model::getDof)
+        .def("getDofPosition", &mdl::Model::getDofPosition)
+        .def("getFrame", &mdl::Model::getFrame)
+        .def("getFrames", &mdl::Model::getFrames)
+        .def("getGammaPosition", &mdl::Model::getGammaPosition)
+        .def("getGammaVelocity", &mdl::Model::getGammaVelocity)
+        .def("getGammaPositionInverse", &mdl::Model::getGammaPositionInverse)
+        .def("getGammaVelocityInverse", &mdl::Model::getGammaVelocityInverse)
+        .def("getHomePosition", &mdl::Model::getHomePosition)
+        .def("getJoint", &mdl::Model::getJoint)
+        .def("getJoints", &mdl::Model::getJoints)
+        .def("getOperationalAcceleration",
+             &mdl::Model::getOperationalAcceleration)
+        .def("getOperationalDof", &mdl::Model::getOperationalDof)
+        .def("getOperationalForce", &mdl::Model::getOperationalForce)
+        .def("getOperationalPosition", &mdl::Model::getOperationalPosition)
+        .def("getOperationalVelocity", &mdl::Model::getOperationalVelocity)
+        .def("getManufacturer", &mdl::Model::getManufacturer)
+        .def("getMaximum", &mdl::Model::getMaximum)
+        .def("getMinimum", &mdl::Model::getMinimum)
+        .def("getName", &mdl::Model::getName)
+        .def("getPosition", &mdl::Model::getPosition)
+        .def("getPositionUnits", &mdl::Model::getPositionUnits)
+        .def("getTransform", &mdl::Model::getTransform)
+        .def("getTransforms", &mdl::Model::getTransforms)
+        .def("getSpeed", &mdl::Model::getSpeed)
+        .def("getSpeedUnits", &mdl::Model::getSpeedUnits)
+        .def("getTorque", &mdl::Model::getTorque)
+        .def("getTorqueUnits", &mdl::Model::getTorqueUnits)
+        .def("getVelocity", &mdl::Model::getVelocity)
+        .def("getVelocityUnits", &mdl::Model::getVelocityUnits)
+        .def("getWorld", &mdl::Model::getWorld)
+        .def("getWorldGravity", &mdl::Model::getWorldGravity)
+        .def("getWraparounds", &mdl::Model::getWraparounds)
         .def("isColliding", &mdl::Model::isColliding)
-        .def("getOperationalPosition", &mdl::Model::getOperationalPosition);
+        .def("replace", py::overload_cast<mdl::Transform*, mdl::Compound*>(
+                            &mdl::Model::replace))
+        .def("remove", py::overload_cast<mdl::Compound*>(&mdl::Model::remove))
+        .def("remove", py::overload_cast<mdl::Frame*>(&mdl::Model::remove))
+        .def("remove", py::overload_cast<mdl::Transform*>(&mdl::Model::remove))
+        .def("seed", &mdl::Model::seed)
+        .def("setAcceleration", &mdl::Model::setAcceleration)
+        .def("setGammaPosition", &mdl::Model::setGammaPosition)
+        .def("setGammaVelocity", &mdl::Model::setGammaVelocity)
+        .def("setHomePosition", &mdl::Model::setHomePosition)
+        .def("setManufacturer", &mdl::Model::setManufacturer)
+        .def("setName", &mdl::Model::setName)
+        .def("setOperationalVelocity", &mdl::Model::setOperationalVelocity)
+        .def("setPosition", &mdl::Model::setPosition)
+        .def("setTorque", &mdl::Model::setTorque)
+        .def("setVelocity", &mdl::Model::setVelocity)
+        .def("setWorldGravity", &mdl::Model::setWorldGravity)
+        .def("tool", py::overload_cast<const ::std::size_t&>(&mdl::Model::tool))
+        .def("tool", py::overload_cast<const ::std::size_t&>(&mdl::Model::tool,
+                                                             py::const_))
+        .def("world", py::overload_cast<>(&mdl::Model::world))
+        .def("world", py::overload_cast<>(&mdl::Model::world, py::const_));
 
     py::class_<mdl::Kinematic, mdl::Model>(mdl, "Kinematic")
         .def(py::init<>())
-        .def("forwardPosition", &mdl::Kinematic::forwardPosition);
+        .def_property_readonly("invJ", &mdl::Kinematic::getJacobianInverse)
+        .def_property_readonly("J", &mdl::Kinematic::getJacobian)
+        .def_property_readonly("Jdqd", &mdl::Kinematic::getJacobianDerivative)
+        .def("calculateJacobian",
+             py::overload_cast<const bool&>(&mdl::Kinematic::calculateJacobian))
+        .def("calculateJacobian",
+             py::overload_cast<::rl::math::Matrix&, const bool&>(
+                 &mdl::Kinematic::calculateJacobian))
+        .def("calculateJacobianDerivative",
+             py::overload_cast<const bool&>(
+                 &mdl::Kinematic::calculateJacobianDerivative))
+        .def("calculateJacobianDerivative",
+             py::overload_cast<::rl::math::Vector&, const bool&>(
+                 &mdl::Kinematic::calculateJacobianDerivative))
+        .def("calculateJacobianInverse",
+             py::overload_cast<const ::rl::math::Real&, const bool&>(
+                 &mdl::Kinematic::calculateJacobianInverse))
+        .def("calculateJacobianInverse",
+             py::overload_cast<const ::rl::math::Matrix&, ::rl::math::Matrix&,
+                               const ::rl::math::Real&, const bool&>(
+                 &mdl::Kinematic::calculateJacobianInverse, py::const_))
+        .def("calculateManipulabilityMeasure",
+             py::overload_cast<>(
+                 &mdl::Kinematic::calculateManipulabilityMeasure, py::const_))
+        .def("calculateManipulabilityMeasure",
+             py::overload_cast<const ::rl::math::Matrix&>(
+                 &mdl::Kinematic::calculateManipulabilityMeasure, py::const_))
+        .def("forwardAcceleration", &mdl::Kinematic::forwardAcceleration)
+        .def("forwardPosition", &mdl::Kinematic::forwardPosition)
+        .def("forwardVelocity", &mdl::Kinematic::forwardVelocity)
+        .def("getJacobian", &mdl::Kinematic::getJacobian)
+        .def("getJacobianDerivative", &mdl::Kinematic::getJacobianDerivative)
+        .def("getJacobianInverse", &mdl::Kinematic::getJacobianInverse)
+        .def("isSingular",
+             py::overload_cast<>(&mdl::Kinematic::isSingular, py::const_))
+        .def("isSingular", py::overload_cast<const ::rl::math::Matrix&>(
+                               &mdl::Kinematic::isSingular, py::const_));
+
+    py::class_<mdl::InverseKinematics, mdl::PyInverseKinematics>(
+        mdl, "InverseKinematics")
+        .def(py::init<mdl::Kinematic*>())
+        .def_property_readonly("goals", &mdl::InverseKinematics::getGoals)
+        .def("addGoal", py::overload_cast<mdl::InverseKinematics::Goal const&>(
+                            &mdl::InverseKinematics::addGoal))
+        .def("addGoal", py::overload_cast<const ::rl::math::Transform&,
+                                          const ::std::size_t&>(
+                            &mdl::InverseKinematics::addGoal))
+        .def("clearGoals", &mdl::InverseKinematics::clearGoals)
+        .def("getGoals", &mdl::InverseKinematics::getGoals)
+        .def("solve", &mdl::InverseKinematics::solve);
+
+    py::class_<mdl::IterativeInverseKinematics,
+               mdl::PyIterativeInverseKinematics, mdl::InverseKinematics>(
+        mdl, "IterativeInverseKinematics")
+        .def(py::init<mdl::Kinematic*>())
+        .def_property("duration", &mdl::IterativeInverseKinematics::getDuration,
+                      &mdl::IterativeInverseKinematics::setDuration)
+        .def_property("epsilon", &mdl::IterativeInverseKinematics::getEpsilon,
+                      &mdl::IterativeInverseKinematics::setEpsilon)
+        .def_property("iterations",
+                      &mdl::IterativeInverseKinematics::getIterations,
+                      &mdl::IterativeInverseKinematics::setIterations);
+
+    py::class_<mdl::JacobianInverseKinematics, mdl::IterativeInverseKinematics>(
+        mdl, "JacobianInverseKinematics")
+        .def(py::init<mdl::Kinematic*>())
+        .def_property("delta", &mdl::JacobianInverseKinematics::getDelta,
+                      &mdl::JacobianInverseKinematics::setDelta)
+        .def_property("method", &mdl::JacobianInverseKinematics::getMethod,
+                      &mdl::JacobianInverseKinematics::setMethod)
+        .def("seed", &mdl::JacobianInverseKinematics::seed);
+
+    py::class_<mdl::NloptInverseKinematics, mdl::IterativeInverseKinematics>(
+        mdl, "NloptInverseKinematics")
+        .def(py::init<mdl::Kinematic*>())
+        .def_property("lb", &mdl::NloptInverseKinematics::getLowerBound,
+                      &mdl::NloptInverseKinematics::setLowerBound)
+        .def_property("up", &mdl::NloptInverseKinematics::getUpperBound,
+                      &mdl::NloptInverseKinematics::setUpperBound)
+        .def_property("iteration", &mdl::NloptInverseKinematics::getIterations,
+                      &mdl::NloptInverseKinematics::setIterations)
+        .def("getFunctionToleranceAbsolute",
+             &mdl::NloptInverseKinematics::getFunctionToleranceAbsolute)
+        .def("getFunctionToleranceRelative",
+             &mdl::NloptInverseKinematics::getFunctionToleranceRelative)
+        .def("getOptimizationToleranceAbsolute",
+             &mdl::NloptInverseKinematics::getOptimizationToleranceAbsolute)
+        .def("getOptimizationToleranceRelative",
+             &mdl::NloptInverseKinematics::getOptimizationToleranceRelative)
+        .def("seed", &mdl::NloptInverseKinematics::seed)
+        .def("setFunctionToleranceAbsolute",
+             &mdl::NloptInverseKinematics::setFunctionToleranceAbsolute)
+        .def("setFunctionToleranceRelative",
+             &mdl::NloptInverseKinematics::setFunctionToleranceRelative)
+        .def(
+            "setOptimizationToleranceAbsolute",
+            py::overload_cast<const ::rl::math::Real&>(
+                &mdl::NloptInverseKinematics::setOptimizationToleranceAbsolute))
+        .def(
+            "setOptimizationToleranceAbsolute",
+            py::overload_cast<const ::rl::math::Vector&>(
+                &mdl::NloptInverseKinematics::setOptimizationToleranceAbsolute))
+        .def("setOptimizationToleranceRelative",
+             &mdl::NloptInverseKinematics::setOptimizationToleranceRelative);
   }
 
   {
