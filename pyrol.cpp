@@ -3,43 +3,38 @@
 #include <pybind11/operators.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
-
-#include <rl/mdl/InverseKinematics.h>
-#include <rl/mdl/JacobianInverseKinematics.h>
-#include <rl/mdl/Kinematic.h>
-#include <rl/mdl/Model.h>
-#include <rl/mdl/NloptInverseKinematics.h>
-#include <rl/mdl/XmlFactory.h>
-
 #include <rl/mdl/Body.h>
 #include <rl/mdl/Compound.h>
 #include <rl/mdl/Frame.h>
+#include <rl/mdl/InverseKinematics.h>
+#include <rl/mdl/JacobianInverseKinematics.h>
 #include <rl/mdl/Joint.h>
+#include <rl/mdl/Kinematic.h>
+#include <rl/mdl/Model.h>
+#include <rl/mdl/NloptInverseKinematics.h>
 #include <rl/mdl/Transform.h>
 #include <rl/mdl/World.h>
-
+#include <rl/mdl/XmlFactory.h>
+#include <rl/plan/AdvancedOptimizer.h>
+#include <rl/plan/BridgeSampler.h>
+#include <rl/plan/GaussianSampler.h>
 #include <rl/plan/GnatNearestNeighbors.h>
 #include <rl/plan/KdtreeBoundingBoxNearestNeighbors.h>
 #include <rl/plan/KdtreeNearestNeighbors.h>
 #include <rl/plan/LinearNearestNeighbors.h>
 #include <rl/plan/NearestNeighbors.h>
-
-#include <rl/plan/RecursiveVerifier.h>
-#include <rl/plan/SequentialVerifier.h>
-#include <rl/plan/Verifier.h>
-
-#include <rl/plan/BridgeSampler.h>
-#include <rl/plan/GaussianSampler.h>
-#include <rl/plan/Sampler.h>
-#include <rl/plan/UniformSampler.h>
-
+#include <rl/plan/Optimizer.h>
 #include <rl/plan/Planner.h>
 #include <rl/plan/Prm.h>
+#include <rl/plan/RecursiveVerifier.h>
 #include <rl/plan/Rrt.h>
-
+#include <rl/plan/Sampler.h>
+#include <rl/plan/SequentialVerifier.h>
 #include <rl/plan/SimpleModel.h>
+#include <rl/plan/SimpleOptimizer.h>
+#include <rl/plan/UniformSampler.h>
+#include <rl/plan/Verifier.h>
 #include <rl/plan/Viewer.h>
-
 #include <rl/sg/Body.h>
 #include <rl/sg/Model.h>
 #include <rl/sg/Shape.h>
@@ -250,6 +245,14 @@ class PyPlanner : public Planner {
   }
   virtual bool solve() override {
     PYBIND11_OVERLOAD_PURE(bool, Planner, solve);
+  }
+};
+
+class PyOptimizer : public Optimizer {
+ public:
+  using Optimizer::Optimizer;
+  virtual void process(VectorList& path) override {
+    PYBIND11_OVERLOAD_PURE(void, Optimizer, process, path);
   }
 };
 
@@ -760,7 +763,13 @@ PYBIND11_MODULE(pyrol, m) {
         .def("inverseOfTransformedDistance",
              &plan::Model::inverseOfTransformedDistance)
         .def("inverseVelocity", &plan::Model::inverseVelocity)
-        .def("interpolate", &plan::Model::interpolate)
+        .def("interpolate",
+             [](plan::Model const& model, const ::rl::math::Vector& q1,
+                const ::rl::math::Vector& q2, const ::rl::math::Real& alpha) {
+               math::Vector q(6);
+               model.interpolate(q1, q2, alpha, q);
+               return q;
+             })
         .def("isColliding", &plan::Model::isColliding)
         .def("isSingular", &plan::Model::isSingular)
         .def("isValid", &plan::Model::isValid)
@@ -792,6 +801,16 @@ PYBIND11_MODULE(pyrol, m) {
         .def("reset", &plan::Planner::reset)
         .def("solve", &plan::Planner::solve)
         .def("verify", &plan::Planner::verify);
+
+    py::class_<plan::Optimizer, plan::PyOptimizer>(plan, "Optimizer")
+        .def(py::init<>())
+        .def_readwrite("model", &plan::Optimizer::model)
+        .def_readwrite("verifier", &plan::Optimizer::verifier)
+        .def_readwrite("viewer", &plan::Optimizer::viewer)
+        .def("process", &plan::Optimizer::process);
+
+    py::class_<plan::SimpleOptimizer, plan::Optimizer>(plan, "SimpleOptimizer")
+        .def(py::init<>());
 
     py::class_<plan::PyRrt, plan::Planner>(plan, "Rrt")
         .def(py::init<>())
