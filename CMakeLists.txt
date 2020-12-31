@@ -9,10 +9,10 @@ add_definitions(-DNOMINMAX) # avoid min/max macros in <windows.h>
 find_package(RL COMPONENTS MDL SG PLAN KIN REQUIRED)
 find_package(pybind11 REQUIRED)
 
-pybind11_add_module(pyrol
-  pyrol.cpp)
+pybind11_add_module(_pyrol
+  src/pyrol.cpp)
 
-target_link_libraries(pyrol
+target_link_libraries(_pyrol
   PUBLIC
     rl::mdl
     rl::sg

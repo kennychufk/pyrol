@@ -280,7 +280,7 @@ class PyRrt : public Rrt {
 namespace py = pybind11;
 using namespace rl;
 
-PYBIND11_MODULE(pyrol, m) {
+PYBIND11_MODULE(_pyrol, m) {
   m.doc() =
       "self-contained C++ library for rigid body kinematics and dynamics, "
       "motion planning, and control";
